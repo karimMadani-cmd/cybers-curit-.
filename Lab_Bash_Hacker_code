@@ -1,0 +1,137 @@
+#!/bin/bash
+# =====================================================
+# Script d'audit et de monitoring système/réseau
+# Auteur: Karim Madani
+# Niveau: Avancé/Université
+# =====================================================
+
+# -------------------------------
+# Module 1 : Variables & Input
+# -------------------------------
+read -p "Entrer IP ou nom de la machine cible : " target
+read -p "Entrer dossier de sortie : " output
+
+echo "Target : $target"
+echo "Output : $output"
+
+# -------------------------------
+# Module 2 : Conditions
+# -------------------------------
+
+# Vérifier si dossier existe
+if [[ ! -d "$output" ]]; then
+    echo "[INFO] Dossier $output inexistant. Création..."
+    mkdir -p "$output"
+fi
+
+# Vérifier si utilisateur root pour certaines commandes
+if [[ "$USER" != "root" ]]; then
+    echo "[WARN] Vous n'êtes pas root. Certaines commandes peuvent échouer."
+fi
+
+# Vérifier si IP vide
+if [[ -z "$target" ]]; then
+    echo "[ERROR] IP ou nom cible vide. Abandon."
+    exit 1
+fi
+
+# -------------------------------
+# Module 3 : Boucles
+# -------------------------------
+
+# 1. Scanner un réseau local avec ping (192.168.1.1 à 192.168.1.10)
+echo "[INFO] Ping du réseau..."
+for i in {1..10}; do
+    ip="192.168.1.$i"
+    ping -c 1 -W 1 "$ip" &> /dev/null
+    if [[ $? -eq 0 ]]; then
+        echo "$ip est en ligne" >> "$output/network.txt"
+    fi
+done
+
+# 2. Boucler sur tous les fichiers du dossier cible pour vérifier permissions
+echo "[INFO] Vérification permissions fichiers..."
+for file in "$target"/*; do
+    perms=$(stat -c "%A %U" "$file")
+    echo "$file : $perms" >> "$output/files_permissions.txt"
+done
+
+# 3. Boucler sur tous les logs pour extraire erreurs
+echo "[INFO] Extraction erreurs logs..."
+for log in "$target"/*.log; do
+    grep -Ei "error|fail|critical" "$log" >> "$output/errors_logs.txt" 2>/dev/null
+done
+
+# -------------------------------
+# Module 4 : Fichiers & Permissions
+# -------------------------------
+
+echo "[INFO] Scan fichiers .conf et vulnérabilités..."
+> "$output/vuln.txt"  # vide le fichier si existant
+for conf in "$target"/*.conf; do
+    perms=$(stat -c "%A %U" "$conf")
+    if [[ ! -r "$conf" || ! -w "$conf" || ! -x "$conf" ]]; then
+        echo "$conf : $perms" >> "$output/vuln.txt"
+    fi
+done
+
+# -------------------------------
+# Module 5 : Pipes & Grep
+# -------------------------------
+
+echo "[INFO] Recherche utilisateurs root..."
+grep '^root:' /etc/passwd > "$output/root_users.txt"
+
+echo "[INFO] Extraction erreurs depuis logs..."
+grep -Ei "error" "$target"/*.log >> "$output/errors_grep.txt" 2>/dev/null
+
+# -------------------------------
+# Module 6 : Find & Logs
+# -------------------------------
+
+echo "[INFO] Liste fichiers SUID/SGID..."
+find / -type f \( -perm -4000 -o -perm -2000 \) 2>/dev/null > "$output/suid_sgid.txt"
+
+echo "[INFO] Tentatives échouées dans auth.log..."
+grep "Failed password" /var/log/auth.log > "$output/auth_failures.txt" 2>/dev/null
+
+# -------------------------------
+# Module 7 : Network Scan
+# -------------------------------
+
+echo "[INFO] Scan ports réseau..."
+> "$output/network_ports.txt"
+for ip in $(cat "$output/network.txt"); do
+    if command -v nmap &> /dev/null; then
+        nmap -Pn -p 1-1024 "$ip" >> "$output/network_ports.txt"
+    else
+        echo "[WARN] nmap non installé, scan ports impossible pour $ip"
+    fi
+done
+
+# -------------------------------
+# Module 8 : Mini Dashboard / Rapport
+# -------------------------------
+
+report="$output/report.txt"
+echo "===== RAPPORT SYSTEME ET RESEAU =====" > "$report"
+echo "" >> "$report"
+
+echo "IP actives :" >> "$report"
+cat "$output/network.txt" >> "$report"
+echo "" >> "$report"
+
+echo "Fichiers vulnérables :" >> "$report"
+cat "$output/vuln.txt" >> "$report"
+echo "" >> "$report"
+
+echo "Erreurs logs :" >> "$report"
+cat "$output/errors_logs.txt" >> "$report"
+echo "" >> "$report"
+
+echo "Fichiers SUID/SGID :" >> "$report"
+cat "$output/suid_sgid.txt" >> "$report"
+echo "" >> "$report"
+
+echo "[INFO] Rapport généré : $report"
+cat "$report"
